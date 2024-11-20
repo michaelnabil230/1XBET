@@ -4,10 +4,15 @@ The following content involves references to gambling and betting activities. It
 
 ## How to use
 
-- Run:
+First, install the required dependencies:
 
 ```bash
   npm install
+```
+
+Then, run the script:
+
+```bash
   npm run start
 ```
 
