@@ -84,6 +84,9 @@ async function scrapeDivData(page) {
     console.log('Starting main loop...');
 
     while (true) {
+        await page.keyboard.press('Tab');
+        await wait(1000);
+        await page.keyboard.press('ArrowDown');
         await wait(1000);
     }
 })();
