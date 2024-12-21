@@ -1,6 +1,5 @@
 import puppeteer from 'puppeteer';
 import fs from 'fs';
-import { format, subHours } from 'date-fns';
 
 const wait = (ms) => new Promise(res => setTimeout(res, ms));
 
@@ -10,12 +9,10 @@ async function scrapeDivData(page) {
     const frame = page.frames().find(f => f.url().includes('/games-frame/games/371'));
 
     if (!frame) {
-        return { totalPlayers: 'N/A', totalBets: 'N/A', totalPrize: 'N/A' };
+        return { totalPlayers: 'N/A', totalBets: 'N/A', totalWinnings: 'N/A' };
     }
 
-    await frame.waitForSelector('.crash-total__value--players', { timeout: 10000 });
-
-    const data = await frame.evaluate(() => {
+    return await frame.evaluate(() => {
         function safeGetText(selector) {
             const element = document.querySelector(selector);
             return element ? element.innerText : 'N/A';
@@ -23,24 +20,51 @@ async function scrapeDivData(page) {
 
         const totalPlayers = safeGetText('.crash-total__value--players');
         const totalBets = safeGetText('.crash-total__value--bets').replace(' EGP', '');;
-        const totalPrize = safeGetText('.crash-total__value--prize').replace(' EGP', '');;
+        const totalWinnings = safeGetText('.crash-total__value--prize').replace(' EGP', '');;
 
         return {
             totalPlayers,
             totalBets,
-            totalPrize
+            totalWinnings
         };
     });
-
-    return data;
 }
 
 (async () => {
     console.log('Starting script...');
 
-    const browser = await puppeteer.launch({ headless: false });
+    const browser = await puppeteer.launch({
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-client-side-phishing-detection',
+            '--disable-setuid-sandbox',
+            '--disable-component-update',
+            '--disable-default-apps',
+            '--disable-popup-blocking',
+            '--disable-offer-store-unmasked-wallet-cards',
+            '--disable-speech-api',
+            '--hide-scrollbars',
+            '--mute-audio',
+            '--disable-extensions',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-default-browser-check',
+            '--no-pings',
+            '--password-store=basic',
+            '--use-mock-keychain',
+            '--no-zygote',
+            '--single-process',
+            '--disable-gpu',
+        ]
+    });
+
     const page = await browser.newPage();
-    await page.goto('https://1xbet.com/en/allgamesentrance/crash', { waitUntil: 'networkidle0' });
+    let status = await page.goto('https://gooobet.com/en/allgamesentrance/crash');
+    status = status.status();
+    console.log(`Probably HTTP response status code ${status}.`);
+
     await page.waitForSelector('iframe.games-project-frame__item');
     const client = await page.createCDPSession();
 
@@ -56,20 +80,15 @@ async function scrapeDivData(page) {
             if (payload.type === 1 && payload.target === 'OnCrash') {
                 const { l, f, ts } = payload.arguments[0];
 
-                const date = new Date(ts);
-                const dateMinusOneHour = subHours(date, 1);
-                const formattedTime = format(dateMinusOneHour, 'HH:mm');
-
-                // Scrape the div data
                 let scrapedData;
                 try {
                     scrapedData = await scrapeDivData(page);
                 } catch (scrapeError) {
                     console.error('Error scraping data:', scrapeError);
-                    scrapedData = { totalPlayers: 'N/A', totalBets: 'N/A', totalPrize: 'N/A' };
+                    scrapedData = { totalPlayers: 'N/A', totalBets: 'N/A', totalWinnings: 'N/A' };
                 }
 
-                const csvData = `${formattedTime},${scrapedData.totalPlayers},${scrapedData.totalBets},${f},${scrapedData.totalPrize},${l}\n`;
+                const csvData = `${ts},${scrapedData.totalPlayers},${scrapedData.totalBets},${f},${scrapedData.totalWinnings},${l}\n`;
 
                 fs.appendFile('data.csv', csvData, (err) => {
                     if (err) throw err;
