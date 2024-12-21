@@ -1,111 +1,132 @@
-import puppeteer from 'puppeteer';
+import 'ws';
 import fs from 'fs';
 
-const wait = (ms) => new Promise(res => setTimeout(res, ms));
+let totalBets = 0;
+let totalWinnings = 0;
+let playerCount = 0;
+let losingPlayers = 0;
+let multiplier = 0;
+let crashTimestamp;
+let gameId = 1;
+let cumulativeCasinoEarnings = 0;
 
-async function scrapeDivData(page) {
-    await page.waitForSelector('iframe.games-project-frame__item');
+let socket;
 
-    const frame = page.frames().find(f => f.url().includes('/games-frame/games/371'));
+function connectToCrashGame() {
+    try {
+        console.log('Connecting to Crash Game WebSocket server...');
+        socket = new WebSocket(
+            'wss://gooobet.com/games-frame/sockets/crash?whence=55&fcountry=66&ref=253&gr=887&appGuid=games-web-master&lng=en'
+        );
 
-    if (!frame) {
-        return { totalPlayers: 'N/A', totalBets: 'N/A', totalWinnings: 'N/A' };
+        socket.addEventListener('open', () => {
+            console.log('Connected to Crash Game WebSocket server');
+
+            socket.send(`{"protocol":"json","version":1}\u001e`);
+
+            setTimeout(() => {
+                socket.send(`{"arguments":[{"activity":30,"currency":119}],"invocationId":"1","target":"Guest","type":1}\u001e`);
+            }, 150);
+        });
+
+        setInterval(() => {
+            socket.send(`{"type":6}\u001e`);
+        }, 15000); // Send ping every 15 seconds
+
+        socket.addEventListener('close', () => {
+            console.log('The WebSocket is closing...');
+        });
+
+        socket.addEventListener('message', (event) => {
+            const cleanedMessage = event.data.replace(/[\x00-\x1F\x7F]/g, '');
+
+            let messageObject;
+            try {
+                messageObject = JSON.parse(cleanedMessage);
+            } catch (error) {
+                console.error('Error parsing JSON:', error);
+                return;
+            }
+
+            switch (messageObject.target) {
+                case 'OnStage':
+                    resetGameData(messageObject);
+                    break;
+                case 'OnBets':
+                    handleBets(messageObject);
+                    break;
+                case 'OnCrash':
+                    handleCrash(messageObject);
+                    break;
+                case 'OnCashouts':
+                    handleCashouts(messageObject);
+                    break;
+            }
+        });
+
+        socket.addEventListener('error', (event) => {
+            console.error('WebSocket error:', event);
+        });
+
+        socket.addEventListener('close', () => {
+            console.log('Connection to WebSocket server closed');
+        });
+    } catch (error) {
+        console.error('An error occurred:', error);
     }
-
-    return await frame.evaluate(() => {
-        function safeGetText(selector) {
-            const element = document.querySelector(selector);
-            return element ? element.innerText : 'N/A';
-        }
-
-        const totalPlayers = safeGetText('.crash-total__value--players');
-        const totalBets = safeGetText('.crash-total__value--bets').replace(' EGP', '');;
-        const totalWinnings = safeGetText('.crash-total__value--prize').replace(' EGP', '');;
-
-        return {
-            totalPlayers,
-            totalBets,
-            totalWinnings
-        };
-    });
 }
 
-(async () => {
-    console.log('Starting script...');
+function resetGameData() {
+    displayGameResults();
+    cumulativeCasinoEarnings += totalBets - totalWinnings;
+    gameId += 1;
+    totalBets = 0;
+    totalWinnings = 0;
+    multiplier = 0;
+    playerCount = 0;
+    losingPlayers = 0;
+}
 
-    const browser = await puppeteer.launch({
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-client-side-phishing-detection',
-            '--disable-setuid-sandbox',
-            '--disable-component-update',
-            '--disable-default-apps',
-            '--disable-popup-blocking',
-            '--disable-offer-store-unmasked-wallet-cards',
-            '--disable-speech-api',
-            '--hide-scrollbars',
-            '--mute-audio',
-            '--disable-extensions',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-default-browser-check',
-            '--no-pings',
-            '--password-store=basic',
-            '--use-mock-keychain',
-            '--no-zygote',
-            '--single-process',
-            '--disable-gpu',
-        ]
+function handleCrash(messageObject) {
+    multiplier = messageObject.arguments[0].f;
+    crashTimestamp = messageObject.arguments[0].ts;
+}
+
+function handleBets(messageObject) {
+    totalBets = messageObject.arguments[0].bid;
+}
+
+function handleCashouts(messageObject) {
+    const { l, won, d, n, q } = messageObject.arguments[0];
+
+    totalWinnings = won;
+    playerCount = n;
+    losingPlayers = d;
+}
+
+function displayGameResults() {
+    const gameData = {
+        'ID': gameId,
+        'Total Bets': totalBets.toFixed(2),
+        'Total Winnings': totalWinnings.toFixed(2),
+        'Player Count': playerCount,
+        'Losing Players': losingPlayers,
+        'Multiplier': multiplier,
+        'Casino Earnings': (totalBets - totalWinnings).toFixed(2),
+        'Cumulative Casino Earnings': cumulativeCasinoEarnings.toFixed(2),
+        'Timestamp': crashTimestamp,
+    };
+
+    const csvData = Object.values(gameData).join(',');
+
+    fs.appendFile('data.csv', `${csvData}\n`, (err) => {
+        if (err) throw err;
+        console.log('Data appended to CSV file');
     });
 
-    const page = await browser.newPage();
-    let status = await page.goto('https://gooobet.com/en/allgamesentrance/crash');
-    status = status.status();
-    console.log(`Probably HTTP response status code ${status}.`);
+    console.table(gameData);
+}
 
-    await page.waitForSelector('iframe.games-project-frame__item');
-    const client = await page.createCDPSession();
+connectToCrashGame();
 
-    await client.send('Network.enable');
-
-    client.on('Network.webSocketFrameReceived', async ({ requestId, timestamp, response }) => {
-        let payloadString = response.payloadData.toString('utf8');
-
-        try {
-            payloadString = payloadString.replace(/[^\x20-\x7E]/g, '');
-            const payload = JSON.parse(payloadString);
-
-            if (payload.type === 1 && payload.target === 'OnCrash') {
-                const { l, f, ts } = payload.arguments[0];
-
-                let scrapedData;
-                try {
-                    scrapedData = await scrapeDivData(page);
-                } catch (scrapeError) {
-                    console.error('Error scraping data:', scrapeError);
-                    scrapedData = { totalPlayers: 'N/A', totalBets: 'N/A', totalWinnings: 'N/A' };
-                }
-
-                const csvData = `${ts},${scrapedData.totalPlayers},${scrapedData.totalBets},${f},${scrapedData.totalWinnings},${l}\n`;
-
-                fs.appendFile('data.csv', csvData, (err) => {
-                    if (err) throw err;
-                    console.log('Data appended to CSV file');
-                });
-            }
-        } catch (error) {
-            console.error('Error processing WebSocket frame:', error);
-        }
-    });
-
-    console.log('Starting main loop...');
-
-    while (true) {
-        await page.keyboard.press('Tab');
-        await wait(1000);
-        await page.keyboard.press('ArrowDown');
-        await wait(1000);
-    }
-})();
+// setInterval(connectToCrashGame, 1200000); // Reconnect every 20 minutes
